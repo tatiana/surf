@@ -36,7 +36,6 @@
 __author__ = 'Cosmin Basca'
 
 import re
-import new
 
 from surf.namespace import get_namespace_url, get_prefix, OWL, all
 from surf.query import Query
@@ -53,12 +52,12 @@ from surf.util import uri_to_class, uuid_subject, value_to_rdf
 a = RDF.type
 class ResourceMeta(type):
     def __new__(mcs, classname, bases, class_dict):
-        ResourceClass = super(ResourceMeta, mcs).__new__(mcs, classname, bases,
+        ResourceClass = super(ResourceMeta, mcs).__new__(mcs, classname, bases, 
                                                          class_dict)
-
+        
         if "uri" not in class_dict:
             ResourceClass.uri = None
-
+            
         return ResourceClass
 
     def __getattr__(self, attr_name):
@@ -159,7 +158,7 @@ class Resource(object):
     _dirty_instances = set()
     
     def __init__(self, subject = None, block_auto_load = False, context = None,
-                 query_contexts = None, namespace = None):
+                 namespace = None):
         """ Initialize a Resource, with the `subject` (a URI - either a string 
         or a URIRef). 
         
@@ -172,36 +171,31 @@ class Resource(object):
         attributes associated with the subject of the resource.
 
         """
-
+        
         if subject is None:
             subject = uuid_subject(namespace)
         elif not type(subject) in [URIRef, BNode]:
             subject = URIRef(subject)
 
         self.__subject = subject
-
+        
         if context == NO_CONTEXT:
             self.__context = None
         elif context:
             self.__context = URIRef(unicode(context))
         elif self.session and self.store_key:
             self.__context = self.session[self.store_key].default_context
-
-        if query_contexts:
-            self.__query_contexts = query_contexts
-        elif self.__context:
-            self.__query_contexts = [self.__context]
-        else:
-            self.__query_contexts = []
-
+        
         self.__expired = False
         self.__rdf_direct = {}
         self.__rdf_direct[a] = [self.uri]
         self.__rdf_inverse = {}
         self.__namespaces = all()
-        # __full is set to true after doing full load. This is used by
-        # __getattr__ to decide if it's worth to query triplestore.
-        self.__full = False
+        # __full_direct and __full_inverse are set to true after doing full load. 
+        # These are used by __getattr__ to decide if it's worth to query 
+        # triplestore.
+        self.__full_direct = False
+        self.__full_inverse = False
 
         if self.session:
             if not self.store_key:
@@ -213,7 +207,7 @@ class Resource(object):
     subject = property(lambda self: self.__subject)
     """ The subject of the resource. """
 
-    namespaces = property(fget=lambda self: self.__namespaces)
+    namespaces = property(fget = lambda self: self.__namespaces)
     """ The namespaces. """
 
     def set_dirty(self, dirty):
@@ -224,7 +218,7 @@ class Resource(object):
         # adding this instance to "dirty_instances" set
         if dirty and not self in self._dirty_instances:
             self._dirty_instances.add(self)
-
+            
         # Setting dirty to "False" means: 
         # removing this instance from "dirty_instances" set
         if not dirty and self in self._dirty_instances:
@@ -233,13 +227,13 @@ class Resource(object):
     def get_dirty(self):
         return self in self._dirty_instances
 
-    dirty = property(fget=get_dirty, fset=set_dirty)
+    dirty = property(fget = get_dirty, fset = set_dirty)
     """ Reflects the `dirty` state of the resource. """
 
-    rdf_direct = property(fget=lambda self: self.__rdf_direct)
+    rdf_direct = property(fget = lambda self: self.__rdf_direct)
     """ Direct predicates (`outgoing` predicates). """
 
-    rdf_inverse = property(fget=lambda self: self.__rdf_inverse)
+    rdf_inverse = property(fget = lambda self: self.__rdf_inverse)
     """ Inverse predicates (`incoming` predicates). """
 
     def __set_context(self, value):
@@ -248,11 +242,18 @@ class Resource(object):
 
         self.__context = value
 
-    context = property(fget=lambda self: self.__context,
-                       fset=__set_context)
-    """ Context (graph) where triples constituting this resource are stored in.
+    context = property(fget = lambda self: self.__context,
+                       fset = __set_context)
+    """ Context (graph) where triples constituting this resource reside in.
 
     In case of SPARQL and SPARUL, "context" is the same thing as "graph".
+
+    Effects of having context set:
+     - When resource as whole or its individual attributes are loaded,
+       triples will be only loaded from this context.
+     - When resource is saved, triples will be saved to this context.
+     - When existence of resource is checked (:meth:`is_present`), only
+       triples in this context will be considered.
 
     `context` attribute would be usually set by `store` or `session` when
     instantiating resource, but it can also be set or changed on
@@ -276,34 +277,9 @@ class Resource(object):
         instance.remove()
 
     """
-
-    def __set_query_contexts(self, values):
-        uri_refs = []
-        for value in values:
-            if not isinstance(value, URIRef):
-                value = URIRef(value)
-            uri_refs.append(value)
-
-        self.__query_contexts = tuple(uri_refs)
-
-    query_contexts = property(fget=lambda self: self.__query_contexts,
-                       fset=__set_query_contexts)
-    """ Contexts (graphs) where triples constituting this resource can originate
-    from.
-
-    Effects of having query contexts set:
-     - When resource as whole or its individual attributes are loaded,
-       triples will be only loaded from these contexts.
-     - When existence of resource is checked (:meth:`is_present`), only
-       triples in these contexts will be considered.
-
-    The query context defaults to the resource's (stored) context but can be
-    changed to allow values from other contexts to be accessed.
-    """
-
+    
     @classmethod
-    def _instance(cls, subject, vals, context=None, query_contexts=None,
-                  store=None, block_auto_load=True):
+    def _instance(cls, subject, vals, context = None, store = None, block_auto_load = True):
         """
         Create an instance from the `subject` and it's associated
         `concept` (`vals`) URIs.
@@ -316,28 +292,27 @@ class Resource(object):
         # If there are none, don't instantiate Resource, return URIRef. 
         if not vals:
             return subject
-
+            
         # Don't have reference to session, cannot instantiate Resource
         if not cls.session:
             return None
-
+            
         uri = vals[0]
         # vals might be an iterator, but we want each 
         # element from it as separate argument, so
         # converting to list.
         classes = map(uri_to_class, list(vals[1:]))
 
-        return cls.session.map_instance(uri, subject, classes=classes,
-                                        block_auto_load=block_auto_load,
-                                        context=context,
-                                        query_contexts=query_contexts,
-                                        store=store)
+        return cls.session.map_instance(uri, subject, classes = classes,
+                                        block_auto_load = block_auto_load,
+                                        context = context,
+                                        store = store)    
 
     @classmethod
     def _lazy(cls, value):
         """
         Do `lazy` instantiation of rdf predicates
-        value is a dictionary {val:{context:[concept,concept,...],...}},
+        value is a dictionary {val:[concept,concept,...]},
         returns a instance of `Resource`.
 
         """
@@ -348,15 +323,7 @@ class Resource(object):
             if isinstance(value[r], Resource) :
                 inst = value[r]
             elif type(r) in [URIRef, BNode]:
-                contexts, concepts_lists  = zip(*value[r].items()) or ([], [])
-                # Flatten concepts lists
-                concepts = [concept for c in concepts_lists for concept in c]
-                # Use context of first concept as type
-                context = contexts and contexts[0] or None
-
-                # TODO r can be both a "literal" value (as from {?s rdf:type r}
-                # or an "object" value (as from {?s ?p r . r rdf:type value[r]})
-                inst = cls._instance(r, concepts, context=context)
+                inst = cls._instance(r, value[r])
             attr_value.append(inst)
         return attr_value
 
@@ -377,7 +344,7 @@ class Resource(object):
         """ Bind the 'resources' registered namespaces to the supplied `graph`.
 
         """
-
+        
         if graph is not None:
             for prefix in self.namespaces:
                 graph.namespace_manager.bind(prefix, self.namespaces[prefix])
@@ -412,7 +379,7 @@ class Resource(object):
 
         def make_values_source(values, rdf_values):
             """ Return callable that returns stored values for this attr. """
-
+            
             def setattr_values_source():
                 """ Return stored values for this attribute. """
 
@@ -432,9 +399,9 @@ class Resource(object):
             if type(value) is ResourceValue:
                 pass
             else:
-                if type(value) not in [list, tuple]:
+                if type(value) not in [list, tuple]: 
                     value = [value]
-
+                    
                 value = map(value_to_rdf, value)
                 values_source = make_values_source(value, rdf_dict[predicate])
                 value = ResourceValue(values_source, self, name)
@@ -492,7 +459,7 @@ class Resource(object):
         """
 
         predicate, direct = attr2rdf(attr_name)
-
+            
         if not predicate:
             raise AttributeError('Not a predicate: %s' % attr_name)
 
@@ -502,7 +469,7 @@ class Resource(object):
 
             def getattr_values_source():
                 """ Load and return values for this attribute. """
-
+                
                 if do_query:
                     store = resource.session[resource.store_key]
                     # Request to triple store
@@ -519,11 +486,6 @@ class Resource(object):
                 else:
                     rdf_dict = resource.__rdf_inverse
 
-                # Save query_contexts
-                for i in range(len(surf_values)):
-                    if isinstance(surf_values[i], Resource):
-                        surf_values[i].query_contexts = self.query_contexts
-
                 # Initial synchronization
                 rdf_dict[predicate] = [resource.to_rdf(value) for value in surf_values]
 
@@ -534,7 +496,11 @@ class Resource(object):
         # If resource is fully loaded and still we're here
         # at __getattr__, this must be an empty attribute, so
         # no point querying triple store.
-        do_query = not self.__full
+        if direct:
+            do_query = not self.__full_direct
+        else:
+            do_query = not self.__full_inverse
+
         values_source = make_values_source(self, predicate, direct, do_query)
 
         attr_value = ResourceValue(values_source, self, attr_name)
@@ -552,28 +518,37 @@ class Resource(object):
             attr_name = rdf2attr(attr_name, True)
 
         return getattr(self, attr_name)
-
-    def load(self):
-        """
-        Load all attributes from the data store:
+    
+    def load(self, only_direct=False):
+        """Load all attributes from the data store.
+        
+        By default, load all attributes from the data store:
             - direct attributes (where the subject is the subject of the resource)
             - indirect attributes (where the object is the subject of the resource)
+
+        If `only_direct` is `False`, don't load inverse attributes.
+        This can be used as optimization when client knows invese
+        attributes won't be accessed. 
 
         .. note:: This method resets the *dirty* state of the object.
 
         """
 
         results_d = self.session[self.store_key].load(self, True)
-        results_i = self.session[self.store_key].load(self, False)
         self.__set_predicate_values(results_d, True)
-        self.__set_predicate_values(results_i, False)
+        self.__full_direct = True
+        
+        if not only_direct:
+            results_i = self.session[self.store_key].load(self, False)
+            self.__set_predicate_values(results_i, False)
+            self.__full_inverse = True
+
         self.dirty = False
-        self.__full = True
 
     def __set_predicate_values(self, results, direct):
         """ set the prediate - value(s) to the resource using lazy loading,
         `results` is a dict under the form:
-        {'predicate':{'value':{'context':[concept,concept],...},...},...}.
+        {'predicate':{'value':[concept,concept],...},...}.
 
         """
 
@@ -585,7 +560,7 @@ class Resource(object):
 
 
     @classmethod
-    def get_by_attribute(cls, attributes, context=None):
+    def get_by_attribute(cls, attributes, context = None):
         """
         Retrieve all `instances` from the data store that have the specified `attributes`
         and are of `rdf:type` of the resource class
@@ -617,7 +592,7 @@ class Resource(object):
                 concepts = types
 
             instances.append(cls._instance(s, concepts))
-
+        
         return instances
 
     @classmethod
@@ -632,22 +607,13 @@ class Resource(object):
 
         rdf_type = None
         # Let's see if rdf:type was specified in query parameters
-        if "get_by" in params:
-            for child in params["get_by"].children:
-                if type(child) != tuple:
-                    continue
-
-                edges, value = child
-                if len(edges) != 1:
-                    continue
-
-                predicate, _ = edges[0]
-                # if rdf:type was filtered against several values,
-                # we cannot use it for assigning type. 
-                # Check here if value is list-like.
-                if predicate == a and not hasattr(value, "__iter__"):
-                    rdf_type = value
-                    break
+        for predicate, value, _ in params.get("get_by", []):
+            # if rdf:type was filtered against several values,
+            # we cannot use it for assigning type. 
+            # Check here if value is list-like.
+            if predicate == a and not hasattr(value, "__iter__"):
+                rdf_type = value
+                break
 
         # In results?
         if (not rdf_type and "direct" in data and a in data["direct"]
@@ -659,21 +625,22 @@ class Resource(object):
             # return URIRef instead
             return subject
 
-        # Take context of rdf_type triple as instance's context
-        context = data["direct"][a][rdf_type].keys()[0]
-
+        context = params.get("context", None)
         instance = cls._instance(subject,
                                  [rdf_type],
-                                 context=context,
-                                 query_contexts=params.get("contexts"),
-                                 store=cls.store_key,
-                                 block_auto_load=False)
+                                 context = context,
+                                 store = cls.store_key,
+                                 block_auto_load = False)
 
         instance.__set_predicate_values(data.get("direct", {}), True)
         instance.__set_predicate_values(data.get("inverse", {}), False)
-        instance.__full = bool(params.get("full"))
+        
+        full = bool(params.get("full"))
+        only_direct = bool(params.get("only_direct"))
+        instance.__full_direct = full
+        instance.__full_inverse = full and not only_direct 
         # __setattr__ marked it as dirty but it's freshly loaded!
-        instance.dirty = False
+        instance.dirty = False 
 
         return instance
 
@@ -685,13 +652,13 @@ class Resource(object):
             return []
 
         store = cls.session[cls.store_key]
-        proxy = ResultProxy(store=store,
-                            instancemaker=cls.__instancemaker)
+        proxy = ResultProxy(store = store,
+                            instancemaker = cls.__instancemaker)
 
-        return proxy.get_by(rdf_type=cls.uri)
+        return proxy.get_by(rdf_type = cls.uri)
 
     @classmethod
-    def get_by(cls, *args, **filters):
+    def get_by(cls, **filters):
         """ Retrieve all instances that match specified filters and class.
 
         Filters are specified as keyword arguments, argument names follow SuRF
@@ -712,10 +679,10 @@ class Resource(object):
         # Client specified rdf_type(s) override our own.
         if not "rdf_type" in filters:
             filters["rdf_type"] = cls.uri
-        proxy = ResultProxy(store=store,
-                            instancemaker=cls.__instancemaker)
+        proxy = ResultProxy(store = store,
+                            instancemaker = cls.__instancemaker)
 
-        return proxy.get_by(*args, **filters)
+        return proxy.get_by(**filters)
 
     def query_attribute(self, attribute_name):
         """ Return ResultProxy for querying attribute values. """
@@ -731,16 +698,13 @@ class Resource(object):
         inverse_attribute_name = str(rdf2attr(uri, not direct))
 
         store = self.session[self.store_key]
-        proxy = ResultProxy(store=store,
-                            instancemaker=self.__instancemaker)
+        proxy = ResultProxy(store = store,
+                            instancemaker = self.__instancemaker)
 
         kwargs = {inverse_attribute_name : self.subject}
-        query = proxy.get_by(**kwargs)
-        if self.query_contexts:
-            query = query.context(*self.query_contexts)
-        return query
+        return proxy.get_by(**kwargs)
 
-    def serialize(self, format='xml', direct=False):
+    def serialize(self, format = 'xml', direct = False):
         """
         Return a serialized version of the internal graph represenatation
         of the resource, the format is the same as expected by rdflib's graph
@@ -755,12 +719,12 @@ class Resource(object):
 
         """
 
-        graph = self.graph(direct=direct)
+        graph = self.graph(direct = direct)
         if format == 'json':
             return to_json(graph)
-        return graph.serialize(format=format)
+        return graph.serialize(format = format)
 
-    def graph(self, direct=True):
+    def graph(self, direct = True):
         """
         Return an `rdflib` `ConjunctiveGraph` represenation of the current `resource`
 
@@ -790,10 +754,10 @@ class Resource(object):
 
         self.session[self.store_key].save(self)
 
-    def remove(self, inverse=False):
+    def remove(self, inverse = False):
         """ Remove the `resource` from the data `store`. """
 
-        self.session[self.store_key].remove(self, inverse=inverse)
+        self.session[self.store_key].remove(self, inverse = inverse)
 
     def update(self):
         """ Update the resource in the data `store`.
@@ -822,8 +786,8 @@ class Resource(object):
                  'xml':'application/rdf+xml',
     }
 
-    def load_from_source(self, data=None, file=None, location=None,
-                         format=None):
+    def load_from_source(self, data = None, file = None, location = None,
+                         format = None):
         """
         Load the `resource` from a source (uri, file or string rdf data).
 
@@ -834,7 +798,7 @@ class Resource(object):
             format = 'application/rdf+xml'
         elif format in self.formats:
             format = self.formats[format]
-        graph.parse(data=data, file=file, location=location, format=format)
+        graph.parse(data = data, file = file, location = location, format = format)
         self.set(graph)
 
     def set(self, graph):
@@ -884,7 +848,7 @@ class Resource(object):
         return None
 
     @classmethod
-    def concept(cls, subject, store=None):
+    def concept(cls, subject, store = None):
         """ Return the Resources `concept` uri (type).
 
         If parameter ``store`` is specified, concept will be retrieved from
@@ -926,7 +890,7 @@ class Resource(object):
         are both of type `Resource`, False otherwise.
 
         """
-
+        
         if isinstance(other, Resource):
             return self.subject == other.subject
 

@@ -2,6 +2,8 @@
 *.pyc
 *.py,cover
 *.egg-info/
+*.svn
+*.sw[a-z]
 .project
 .pydevproject
 .settings

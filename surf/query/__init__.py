@@ -62,12 +62,14 @@ class Group(list):
 class NamedGroup(Group):
     '''A **SPARQL** triple pattern named group
     '''
-    def __init__(self, name=None):
+    def __init__(self, name = None):
         Group.__init__(self)
         if isinstance(name, URIRef) or (type(name) in [str, unicode] and name.startswith('?')):
             self.name = name
         else:
-            raise ValueError('The names')
+            raise ValueError("Invalid specifier for named group"
+                             ", should be either a variable (e.g. '?s')"
+                             " or a URIRef instance")
 
 class OptionalGroup(Group):
     '''A **SPARQL** triple pattern optional group
@@ -83,7 +85,7 @@ class Filter(unicode):
     '''A **SPARQL** triple pattern filter
     '''
     @classmethod
-    def regex(cls, var, pattern, flag=None):
+    def regex(cls, var, pattern, flag = None):
         if type(var) in [str, unicode] and var.startswith('?'): pass
         else: raise ValueError('not a filter variable')
 
@@ -134,34 +136,39 @@ class Query(object):
         self._offset = None
         self._order_by = []
 
-    query_type = property(fget=lambda self: self._type)
+    query_type = property(fget = lambda self: self._type)
     '''the query `type` can be: *SELECT*, *ASK*, *DESCRIBE*or *CONSTRUCT*'''
-    query_modifier = property(fget=lambda self: self._modifier)
+    query_modifier = property(fget = lambda self: self._modifier)
     '''the query `modifier` can be: *DISTINCT*, *REDUCED*, or `None`'''
-    query_vars = property(fget=lambda self: self._vars)
+    query_vars = property(fget = lambda self: self._vars)
     '''the query `variables` to return as the resultset'''
-    query_from = property(fget=lambda self: self._from)
+    query_from = property(fget = lambda self: self._from)
     '''list of URIs that will go into query FROM clauses'''
     query_from_named = property(fget = lambda self: self._from_named)
     '''list of URIs that will go into query FROM NAMED clauses'''
-    query_data = property(fget=lambda self: self._data)
+    query_data = property(fget = lambda self: self._data)
     '''the query `data`, internal structure representing the contents of the *WHERE* clause'''
-    query_limit = property(fget=lambda self: self._limit)
+    query_limit = property(fget = lambda self: self._limit)
     '''the query `limit`, can be a number or None'''
-    query_offset = property(fget=lambda self: self._offset)
+    query_offset = property(fget = lambda self: self._offset)
     '''the query `offset`, can be a number or None'''
-    query_order_by = property(fget=lambda self: self._order_by)
+    query_order_by = property(fget = lambda self: self._order_by)
     '''the query `order by` variables'''
 
     def _validate_variable(self, var):
         if type(var) in [str, unicode]:
-            if not var.startswith('?'):
+            if var.startswith('?'):
+                return True
+            elif re.match('\s*\(\s*.+\s+AS\s+\?.+\)\s*$', var):
+                # SPARQL 1.1 expressions http://www.w3.org/TR/sparql11-query/#rSelectClause
+                return True
+            else:
                 for aggregate in Query.AGGREGATE_FUCTIONS:
                     if var.lower().startswith(aggregate):
                         return True
-                raise ValueError('''Not a variable : <%s>, check correct syntax ("?" or
-                                 supported aggregate %s)''' % (var, str(Query.AGGREGATE_FUCTIONS)))
-            return True
+            raise ValueError('''Not a variable : <%s>, check correct syntax ("?",
+                                expression, or supported aggregate %s)'''
+                             % (var, str(Query.AGGREGATE_FUCTIONS)))
         else:
             raise ValueError('''Unknown variable type, all variables must either
                              start with a "?" or be among the recognized aggregates :
@@ -362,7 +369,28 @@ def optional_group(*statements):
     return g
 
 def group(*statements):
+    """ Return group graph pattern.
+
+    Returned object can be used as argument in :meth:`Query.where` method.
+
+    group()` accepts multiple arguments, similarly
+    to :meth:`Query.where()`.
+
+    """
     g = Group()
+    g.extend([stmt for stmt in statements if validate_statement(stmt)])
+    return g
+
+def union(*statements):
+    """ Return union graph pattern.
+
+    Returned object can be used as argument in :meth:`Query.where` method.
+
+    union()` accepts multiple arguments, similarly
+    to :meth:`Query.where()`.
+
+    """
+    g = Union()
     g.extend([stmt for stmt in statements if validate_statement(stmt)])
     return g
 

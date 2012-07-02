@@ -68,7 +68,7 @@ class RDFReader(Plugin):
 
         return False
 
-    def _concept(self, subject):
+    def _concept(self,subject):
         """ To be implemented by classes that inherit `RDFReader`.
 
         This method is called directly by :meth:`concept`.
@@ -100,7 +100,7 @@ class RDFReader(Plugin):
         """
 
         subj = hasattr(resource, 'subject') and resource.subject or resource
-        return self._get(subj, attribute, direct, resource.query_contexts)
+        return self._get(subj, attribute, direct, resource.context)
 
     def load(self, resource, direct):
         """ Fully load the ``resource`` from the `store`.
@@ -113,13 +113,13 @@ class RDFReader(Plugin):
         """
 
         subj = hasattr(resource, 'subject') and resource.subject or resource
-        return self._load(subj, direct, resource.query_contexts)
+        return self._load(subj, direct, resource.context)
 
     def is_present(self, resource):
         """ Return `True` if the ``resource`` is present in the `store`. """
 
         subj = hasattr(resource, 'subject') and resource.subject or resource
-        return self._is_present(subj, resource.query_contexts)
+        return self._is_present(subj, resource.context)
 
     def concept(self, resource):
         """ Return the `concept` URI of the following `resource`.

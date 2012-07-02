@@ -46,10 +46,10 @@ from setuptools import setup, find_packages
 execfile('surf/__version__.py')
 
 setup(
-      name='surf',
+      name='SuRF',
       version=str_version,
       description='Object RDF Mapper',
-      long_description = '''SuRF is a Python library for working with RDF data in an Object-Oriented way. In SuRF, RDF nodes (subjects and objects) are represented as Python objects and RDF arcs (predicates) as their attributes. SuRF is an Object RDF Mapper (ORM), similar in concept to Object Relational Mappers like SQLAlchemy. SuRF was inspired by ActiveRDF for Ruby.''',
+      long_description=open('README.txt').read() + open('NEWS.txt').read(),
       license = 'New BSD SOFTWARE', 
       author="Cosmin Basca",
       author_email="cosmin.basca at google.com",
@@ -60,6 +60,8 @@ setup(
       requires=['simplejson'], # Used by distutils to create metadata PKG-INFO
       install_requires=['rdflib>=2.4.2',
                         'simplejson>=2.0.9',], #Used by setuptools to install the dependencies
+      tests_require=['surf.rdflib'],
+      test_suite = "surf.test",
       classifiers=[
         'Development Status :: 4 - Beta',
         'Intended Audience :: Developers',

@@ -36,63 +36,53 @@
 __author__ = 'Cosmin Basca'
 
 from surf.plugin.reader import RDFReader
-from surf.query import Query, Union, Group
+from surf.query import Query, Union
 from surf.query import a, ask, select, optional_group, named_group
-from surf.resource.util import Q
+
 from surf.rdf import URIRef
 
-def query_SP(s, p, direct, contexts):
-    """ Construct :class:`surf.query.Query` with `?v` and `?g`, `?c` as
-    unknowns. """
+def query_SP(s, p, direct, context):
+    """ Construct :class:`surf.query.Query` with `?v` and `?c` as unknowns. """
 
     s, v = direct and (s, '?v') or ('?v', s)
-    query = select('?v', '?c', '?g').distinct()
-    query.where((s, p, v)).optional_group(('?v', a, '?c'))\
-                          .optional_group(named_group('?g', ('?v', a, '?c')))
-    if contexts:
-        query.from_(*contexts)
-        query.from_named(*contexts)
+    query = select('?v', '?c').distinct()
+    query.where((s, p, v)).optional_group(('?v', a, '?c'))
+    if context:
+        query.from_(context)
 
     return query
 
-def query_S(s, direct, contexts):
-    """ Construct :class:`surf.query.Query` with `?p`, `?v` and `?g`, `?c` as
+def query_S(s, direct, context):
+    """ Construct :class:`surf.query.Query` with `?p`, `?v` and `?c` as
     unknowns. """
+
     s, v = direct and (s, '?v') or ('?v', s)
-    query = select('?p', '?v', '?c', '?g').distinct()
-    # Get predicate, objects and optionally rdf:type & named graph of
-    # subject rdf:type and object rdf:type
-    # TODO fails under Virtuoso as V. doesn't allow ?g to be bound to two
-    # optional matches
-    query.where((s, '?p', v)).optional_group(('?v', a, '?c'))\
-                             .optional_group(named_group('?g', (s, a, v)))\
-                             .optional_group(named_group('?g', ('?v', a, '?c')))
-    if contexts:
-        query.from_(*contexts)
-        query.from_named(*contexts)
+    query = select('?p', '?v', '?c').distinct()
+    query.where((s, '?p', v)).optional_group(('?v', a, '?c'))
+    if context:
+        query.from_(context)
 
     return query
 
-def query_Ask(subject, contexts):
+def query_Ask(subject, context):
     """ Construct :class:`surf.query.Query` of type **ASK**. """
 
-    query = ask().where((subject, '?p', '?o'))
-
-    if contexts:
-        query.from_(*contexts)
-        query.from_named(*contexts)
+    query = ask()
+    if context:
+        pattern = named_group(context, (subject, '?p', '?o'))
+        query.where(pattern)
+    else:
+        query.where((subject, '?p', '?o'))
 
     return query
 
 #Resource class level
 def query_P_S(c, p, direct, context):
-    """ Construct :class:`surf.query.Query` with `?s` and `?g`, `?c` as
-    unknowns. """
+    """ Construct :class:`surf.query.Query` with `?s` and `?c` as unknowns. """
 
-    query = select('?s', '?c', '?g').distinct()
+    query = select('?s', '?c').distinct()
     if context:
         query.from_(context)
-        query.from_named(context)
 
     for i in range(len(p)):
         s, v = direct and  ('?s', '?v%d' % i) or ('?v%d' % i, '?s')
@@ -100,7 +90,6 @@ def query_P_S(c, p, direct, context):
             query.where((s, p[i], v))
 
     query.optional_group(('?s', a, '?c'))
-    query.optional_group(named_group('?g', ('?s', a, '?c')))
 
     return query
 
@@ -121,18 +110,18 @@ class RDFQueryReader(RDFReader):
             raise ValueError('The use_subqueries parameter must be a bool or a string set to "true" or "false"')
 
     #protected interface
-    def _get(self, subject, attribute, direct, query_contexts):
-        query = query_SP(subject, attribute, direct, query_contexts)
+    def _get(self, subject, attribute, direct, context):
+        query = query_SP(subject, attribute, direct, context)
         result = self._execute(query)
-        return self.convert(result, 'v', 'g', 'c')
+        return self.convert(result, 'v', 'c')
 
-    def _load(self, subject, direct, query_contexts):
-        query = query_S(subject, direct, query_contexts)
+    def _load(self, subject, direct, context):
+        query = query_S(subject, direct, context)
         result = self._execute(query)
-        return self.convert(result, 'p', 'v', 'g', 'c')
+        return self.convert(result, 'p', 'v', 'c')
 
-    def _is_present(self, subject, query_contexts):
-        query = query_Ask(subject, query_contexts)
+    def _is_present(self, subject, context):
+        query = query_Ask(subject, context)
         result = self._execute(query)
         return self._ask(result)
 
@@ -144,84 +133,10 @@ class RDFQueryReader(RDFReader):
     def _instances_by_attribute(self, concept, attributes, direct, context):
         query = query_P_S(concept, attributes, direct, context)
         result = self._execute(query)
-        return self.convert(result, 's', 'g', 'c')
-
-    @classmethod
-    def __edge_iterator(cls, edge='e'):
-        edge_idx = 0
-        while True:
-            yield '?' + edge + str(edge_idx)
-            edge_idx += 1
-
-    @classmethod
-    def __build_attribute_clause(cls, (edges, values), edge_iterator):
-        def order_terms(a, b, c, direct):
-            if direct:
-                return (a, b, c)
-            else:
-                return (c, b, a)
-
-        last_edge = "?s"
-        clauses = []
-
-        # Build path to attribute, value pair
-        for attribute, direct in edges[:-1]:
-            edge_variable = edge_iterator.next()
-
-            clauses.append(order_terms(last_edge,
-                                       attribute,
-                                       edge_variable,
-                                       direct))
-            last_edge = edge_variable
-
-        # Attach value query to path
-        attribute, direct = edges[-1]
-        if hasattr(values, "__iter__"):
-            union_clause = Union()
-            for value in values:
-                union_clause.append(order_terms(last_edge,
-                                                attribute,
-                                                value,
-                                                direct))
-            clauses.append(union_clause)
-        else:
-            clauses.append(order_terms(last_edge,
-                                       attribute,
-                                       values,
-                                       direct))
-        return clauses
-
-    @classmethod
-    def __build_where_clause(cls, q_obj, edge_iterator):
-        clauses = []
-        for child in q_obj.children:
-            if isinstance(child, Q):
-                subclauses = cls.__build_where_clause(child, edge_iterator)
-                connection = child.connection
-            else:
-                subclauses = cls.__build_attribute_clause(child, edge_iterator)
-                connection = Q.AND
-
-            if len(subclauses) > 1:
-                if connection == Q.AND:
-                    clause = Group(subclauses)
-                elif connection == Q.OR:
-                    clause = Union(subclauses)
-            else:
-                clause = subclauses[0]
-
-            clauses.append(clause)
-
-        return clauses
+        return self.convert(result, 's', 'c')
 
     def __apply_limit_offset_order_get_by_filter(self, params, query):
         """ Apply limit, offset, order parameters to query. """
-        def order_terms(a, b, c, direct):
-            if direct:
-                return (a, b, c)
-            else:
-                return (c, b, a)
-
 
         if "limit" in params:
             query.limit(params["limit"])
@@ -230,13 +145,20 @@ class RDFQueryReader(RDFReader):
             query.offset(params["offset"])
 
         if "get_by" in params:
-            edges = self.__edge_iterator()
-            clauses = self.__build_where_clause(params["get_by"], edges)
-
-            if params["get_by"].connection == Q.OR:
-                query.where(Union(clauses))
-            else:
-                query.where(*clauses)
+            for attribute, values, direct  in params["get_by"]:
+                if direct:
+                    order_terms = lambda a, b ,c: (a, b, c)
+                else:
+                    order_terms = lambda a, b ,c: (c, b, a)
+                    
+                if hasattr(values, "__iter__"):
+                    where_clause = Union()
+                    for value in values:
+                        where_clause.append(order_terms("?s", attribute, value))
+                else:
+                    where_clause = order_terms("?s", attribute, values) 
+                
+                query.where(where_clause)
 
         if "filter" in params:
             filter_idx = 0
@@ -253,29 +175,14 @@ class RDFQueryReader(RDFReader):
                     query.order_by("DESC(?s)")
                 else:
                     query.order_by("?s")
-            elif params["order"] != False:
+            else:
                 # Match another variable, order by it
-                edges = params["order"]
-                edge_idx = 0
-                last_edge = "?s"
-                where_clauses = []
-
-                # Build path to attribute, value pair for which we sort
-                for attribute, direct in edges:
-                    edge_idx += 1
-                    edge_variable = "?o%d" % edge_idx
-
-                    where_clauses.append(order_terms(last_edge,
-                                                     attribute,
-                                                     edge_variable,
-                                                     direct))
-                    last_edge = edge_variable
-
-                query.optional_group(*where_clauses)
+                query.optional_group(("?s", params["order"], "?o"))
                 if "desc" in params and params["desc"]:
-                    query.order_by("DESC(%s)" % last_edge)
+                    query.order_by("DESC(?o)")
                 else:
-                    query.order_by(last_edge)
+                    query.order_by("?o")
+
 
         return query
 
@@ -288,16 +195,13 @@ class RDFQueryReader(RDFReader):
                 return self.__get_by_n_queries(params)
 
         # No details, just subjects and classes
-        query = select("?s", "?c", "?g")
+        query = select("?s", "?c")
         self.__apply_limit_offset_order_get_by_filter(params, query)
         query.optional_group(("?s", a, "?c"))
-        # Query for the same tuple to get the named graph if obtainable
-        query.optional_group(named_group("?g", ("?s", a, "?c")))
 
-        contexts = params.get("contexts", None)
-        if contexts:
-            query.from_(*contexts)
-            query.from_named(*contexts)
+        context = params.get("context", None)
+        if not (context is None):
+            query.from_(context)
 
         # Load just subjects and their types
         table = self._to_table(self._execute(query))
@@ -313,23 +217,18 @@ class RDFQueryReader(RDFReader):
                 subjects[subject] = instance_data
                 results.append((subject, instance_data))
 
-            # "context" comes from an optional group and is missing if the
-            # triple is stored in the unamed graph
-            context = match.get("g")
-
             if "c" in match:
                 concept = match["c"]
-                subjects[subject]["direct"][a][concept] = {context: []}
+                subjects[subject]["direct"][a][concept] = []
 
         return results
 
     def __get_by_n_queries(self, params):
-        contexts = params.get("contexts", None)
+        context = params.get("context", None)
 
         query = select("?s")
-        if contexts:
-            query.from_(*contexts)
-            query.from_named(*contexts)
+        if not (context is None):
+            query.from_(context)
 
         self.__apply_limit_offset_order_get_by_filter(params, query)
 
@@ -340,13 +239,13 @@ class RDFQueryReader(RDFReader):
             subject = match["s"]
             instance_data = {}
 
-            result = self._execute(query_S(subject, True, contexts))
-            result = self.convert(result, 'p', 'v', 'g', 'c')
+            result = self._execute(query_S(subject, True, context))
+            result = self.convert(result, 'p', 'v', 'c')
             instance_data["direct"] = result
 
             if not params.get("only_direct"):
-                result = self._execute(query_S(subject, False, contexts))
-                result = self.convert(result, 'p', 'v', 'g', 'c')
+                result = self._execute(query_S(subject, False, context))
+                result = self.convert(result, 'p', 'v', 'c')
                 instance_data["inverse"] = result
 
             results.append((subject, instance_data))
@@ -354,7 +253,7 @@ class RDFQueryReader(RDFReader):
         return results
 
     def __get_by_subquery(self, params):
-        contexts = params.get("contexts", None)
+        context = params.get("context", None)
 
         inner_query = select("?s")
         inner_params = params.copy()
@@ -365,17 +264,26 @@ class RDFQueryReader(RDFReader):
         self.__apply_limit_offset_order_get_by_filter(inner_params, inner_query)
 
 
-        query = select("?s", "?p", "?v", "?c", "?g").distinct()
-        # Get values with object type & context
-        # TODO we need to query both contexts, from ?s -> rdf_type & ?v -> rdf_type but Virtuoso does not bind ?g twice. Bug or feature?
-        query.group(('?s', '?p', '?v'),
-                    optional_group(('?v', a, '?c')),
-                    optional_group(named_group("?g", ("?s", a, "?v"))))
-                    #optional_group(named_group("?g", ("?v", a, "?c"))))
+        if params.get("only_direct"):
+            query = select("?s", "?p", "?v", "?c").distinct()
+            query.group(('?s', '?p', '?v'), optional_group(('?v', a, '?c')))
+        else:
+            direct_query = select("?s", "?p", "?v", "?c", '("0" AS ?i)')
+            direct_query.distinct()
+            direct_query.group(('?s', '?p', '?v'),
+                               optional_group(('?v', a, '?c')))
+
+            indirect_query = select("?s", "?p", "?v", "?c", '("1" AS ?i)')
+            indirect_query.distinct()
+            indirect_query.group(('?v', '?p', '?s'),
+                                 optional_group(('?v', a, '?c')))
+
+            query = select("?s", "?p", "?v", "?c", "?i")
+            query.union(direct_query, indirect_query)
+
         query.where(inner_query)
-        if contexts:
-            query.from_(*contexts)
-            query.from_named(*contexts)
+        if not (context is None):
+            query.from_(context)
 
         # Need ordering in outer query
         if "order" in params:
@@ -397,30 +305,31 @@ class RDFQueryReader(RDFReader):
             subject = URIRef(match["s"])
             predicate = URIRef(match["p"])
             value = match["v"]
+            # Inverse given if only_direct is False
+            inverse = match.get("i") == "1"
 
             # Add subject to result list if it's not there
             if not subject in subjects:
-                instance_data = {"direct" : {}}
+                instance_data = {"direct" : {}, "inverse": {}}
                 subjects[subject] = instance_data
                 results.append((subject, instance_data))
 
-            # Add predicate to subject's direct predicates if it's not there
-            direct_attributes = subjects[subject]["direct"]
-            if not predicate in direct_attributes:
-                direct_attributes[predicate] = {}
-
-            # "context" comes from an optional group and is missing if the
-            # triple is stored in the unamed graph
-            context = match.get("g")
+            if inverse:
+                attributes = subjects[subject]["inverse"]
+            else:
+                attributes = subjects[subject]["direct"]
+            # Add predicate to subject's predicates if it's not there
+            if not predicate in attributes:
+                attributes[predicate] = {}
 
             # Add value to subject->predicate if ...
-            predicate_values = direct_attributes[predicate]
+            predicate_values = attributes[predicate]
             if not value in predicate_values:
-                predicate_values[value] = {context: []}
+                predicate_values[value] = []
 
             # Add RDF type of the value to subject->predicate->value list
             if "c" in match:
-                predicate_values[value][context].append(match["c"])
+                predicate_values[value].append(match["c"])
 
         return results
 
@@ -455,7 +364,9 @@ class RDFQueryReader(RDFReader):
             data = results
             for i in range(len(keys) - 1):
                 k = keys[i]
-                v = row.get(k)
+                if k not in row:
+                    continue
+                v = row[k]
                 if i < last:
                     if v not in data:
                         data[v] = {}
@@ -463,11 +374,11 @@ class RDFQueryReader(RDFReader):
                 elif i == last:
                     if v not in data:
                         data[v] = []
-
+                    
                     value = row.get(keys[i + 1])
                     if value:
                         data[v].append(value)
-
+        
         return results
 
     # public interface

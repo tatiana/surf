@@ -23,11 +23,14 @@ class PluginTestMixin(object):
 
     def _create_persons(self, session):
         Person = session.get_class(surf.ns.FOAF + "Person")
+        persons = []
         for name in ["John", "Mary", "Jane"]:
             # Some test data.
             person = session.get_resource("http://%s" % name, Person)
             person.foaf_name = name
             person.save()
+            persons.append(person)
+        return persons
 
     def test_save_remove(self):
         """ Test that saving SuRF resource works.  """
@@ -197,24 +200,38 @@ class PluginTestMixin(object):
         """ Test loading details. """
 
         _, session = self._get_store_session()
-        self._create_persons(session)
+        john, mary, jane = self._create_persons(session)
         Person = session.get_class(surf.ns.FOAF + "Person")
 
         # Create inverse foaf_knows attribute for Mary
-        jane = session.get_resource("http://Jane", Person)
         jane.foaf_knows = URIRef("http://Mary")
         jane.save()
 
         persons = Person.all().get_by(foaf_name = Literal("Mary")).full()
-        persons = list(persons)
-        self.assertTrue(len(persons[0].rdf_direct) > 1)
-        self.assertTrue(len(persons[0].rdf_inverse) > 0)
+        mary_double = persons.one()
+        self.assertTrue(len(mary_double.rdf_direct) > 1)
+        self.assertTrue(len(mary_double.rdf_inverse) > 0)
+        self.assertEquals(mary_double.foaf_name.first, "Mary")
+        self.assertEquals(mary_double.is_foaf_knows_of.first, jane)
 
-        # Now, only direct
+    def test_full_only_direct(self):
+        """ Test loading details with only_direct=True. """
+
+        _, session = self._get_store_session()
+        john, mary, jane = self._create_persons(session)
+        Person = session.get_class(surf.ns.FOAF + "Person")
+
+        # Create inverse foaf_knows attribute for Mary
+        jane.foaf_knows = mary
+        jane.save()
+
         persons = Person.all().get_by(foaf_name = Literal("Mary")).full(only_direct = True)
-        persons = list(persons)
-        self.assertTrue(len(persons[0].rdf_direct) > 1)
-        self.assertTrue(len(persons[0].rdf_inverse) == 0)
+        mary_double = persons.one()
+        # At first, rdf_inverse should be empty
+        self.assertTrue(len(mary_double.rdf_inverse) == 0)
+        
+        # But inverse attributes should still load on request
+        self.assertEquals(mary_double.is_foaf_knows_of.first, jane)
 
     def test_order_limit_offset(self):
         """ Test ordering by subject, limit, offset. """
@@ -402,9 +419,7 @@ class PluginTestMixin(object):
     def test_save_unicode(self):
         """ Test that saving unicode data works.  """
 
-        # Read from different session.
         _, session = self._get_store_session()
-        self._create_persons(session)
         Person = session.get_class(surf.ns.FOAF + "Person")
         john = session.get_resource("http://John", Person)
         john.foaf_name = u"Jānis"
@@ -590,6 +605,25 @@ class PluginTestMixin(object):
         Logic = session.get_class(surf.ns.SURF.Logic)
         res = Logic.all().limit(1).first()
         res.load()
+        
+    def test_load_only_direct(self):
+        """ Test resource.load(only_direct=True) """
+        
+        _, session = self._get_store_session(use_default_context=False)
+        john, mary, jane = self._create_persons(session)
+        
+        mary.foaf_knows = jane
+        mary.is_foaf_knows_of = john
+        mary.save()
+        
+        # Mary now has both direct and inverse attributes.
+        # Let's test loading just the direct ones
+        
+        Person = session.get_class(surf.ns.FOAF + "Person")
+        mary_double = session.get_resource(mary.subject, Person) 
+        mary_double.load(only_direct=True)
+        
+        self.assertEqual(len(mary_double.rdf_inverse), 0)
 
     def test_concept(self):
         _, session = self._get_store_session(use_default_context=False)
@@ -828,20 +862,19 @@ class PluginTestMixin(object):
         # Store datatype
         jake = session.get_resource("http://Jake", Person)
         jake.foaf_name = "Jake"
-        jake.foaf_birthday = datetime.datetime.now() # OK we are abusing the foaf:birthday here
+        jake.foaf_age = 62
         jake.save()
 
         # Get birthday
-        query = select('?b').where(('?s', a, Person.uri),
-                                   ('?s', ns.FOAF.birthday, '?b'))
+        query = select('?age').where(('?s', a, Person.uri),
+                                   ('?s', ns.FOAF.age, '?age'))
         result = store.execute_sparql(unicode(query))
         assert len(result['results']['bindings']) == 1
         entry = result['results']['bindings'][0]
 
-        # Test that rdflib type is property constructed
-        birthday = json_to_rdflib(entry['b'])
-        self.assertEquals(type(birthday.toPython()),
-                                datetime.datetime)
+        # Test that rdflib type is properly constructed
+        age = json_to_rdflib(entry['age'])
+        self.assertEquals(age.toPython(), 62)
 
     def test_clear_context(self):
         """ Test clear() with context. """
@@ -932,220 +965,37 @@ class PluginTestMixin(object):
         self.assert_('head' in result)
         self.assertEquals(result['boolean'], True)
 
-    def test_keep_context(self):
-        """ Test that context does not change during load/save. """
-        store, session = self._get_store_session(use_default_context=False)
-        Person = session.get_class(surf.ns.FOAF + "Person")
+    # TODO we currently do not support this feature
+    #def test_keep_context_defaultgraphunion(self):
+        #""" Test that context does not change during load/save when working
+        #with the default graph as union over all named graphs. """
+        #store, session = self._get_store_session(use_default_context=False)
+        #Person = session.get_class(surf.ns.FOAF + "Person")
 
-        context = URIRef("http://my_context_1")
-        store.clear(context)
+        #context = URIRef("http://my_context_1")
+        #store.clear(context)
 
-        jake = session.get_resource("http://Jake", Person, context=context)
-        jake.foaf_name = "Jake"
-        jake.save()
+        #jake = session.get_resource("http://Jake", Person, context=context)
+        #jake.foaf_name = "Jake"
+        #jake.save()
 
-        # Get all persons, don't use context
-        jake = Person.all().context(NO_CONTEXT).one()
-        jake.load()
-        jake.foaf_name = "Jacob"
-        jake.save()
+        ## Get all persons, don't use context. Some stores like Virtuoso or
+        ## AllegroGraph have designed the default graph (used when NO_CONTEXT
+        ## given) to be the union over all named graphs. In this case we will
+        ## yield entries from all contexts here.
+        #persons = Person.all().context(NO_CONTEXT)
+        #self.assert_(len(persons) < 2)
 
-        # Check that we only changed the foaf_name attribute
-        self.assertEquals(len(Person.all().context(context)), 1)
-        self.assertEquals(Person.all().context(context).one().foaf_name.first,
-                          'Jacob')
-        self.assertEquals(len(Person.all().context(NO_CONTEXT)), 1)
+        #if len(persons) == 1:
+            #jake = persons.one()
+            #jake.load()
+            #jake.foaf_name = "Jacob"
+            #jake.save()
 
-    def test_query_multiple_context(self):
-        """ Test resource.all() and get_by() with multiple contexts. """
+        ## Check that we only changed the foaf_name attribute
+        #self.assertEquals(len(Person.all().context(context)), 1)
+        #self.assertEquals(Person.all().context(context).one().foaf_name.first,
+                          #'Jacob')
 
-        store, session = self._get_store_session(use_default_context=False)
-        Person = session.get_class(surf.ns.FOAF + "Person")
-
-        # Put each person into one context
-        name_and_context = []
-        for name, context in [("John", None),
-                              ("Mary", URIRef("http://my_context_1")),
-                              ("Jane", URIRef("http://other_context_1"))]:
-            person = session.get_resource("http://%s" % name, Person,
-                                          context=context)
-            person.foaf_name = name
-            person.save()
-            name_and_context.append((name, person.context))
-
-        persons = list(Person.all().context(NO_CONTEXT))
-        
-        self.assertEquals(len(persons), 3)
-        get_name_and_context = lambda p: (unicode(p.foaf_name.first), p.context)
-        self.assertEquals(set(map(get_name_and_context, persons)),
-                          set(name_and_context))
-
-    def test_query_foreign_context_attribute(self):
-        store, session = self._get_store_session(use_default_context=False)
-        Person = session.get_class(surf.ns.FOAF + "Person")
-
-        # Put each person into one context
-        persons = {}
-        for name, context in [("John", None),
-                              ("Mary", URIRef("http://my_context_1")),
-                              ("Jane", URIRef("http://other_context_1"))]:
-            person = session.get_resource("http://%s" % name, Person,
-                                          context=context)
-            person.foaf_name = name
-            person.save()
-            persons[name] = person
-
-        persons['Mary'].foaf_knows = [persons['Jane'], persons['John']]
-        persons['Mary'].update()
-
-        mary = Person.get_by(foaf_name='Mary').context(NO_CONTEXT).one()
-
-        knows = list(mary.foaf_knows.order(surf.ns.FOAF.name)\
-                                    .context(NO_CONTEXT))
-        self.assertEquals(knows[0].context, persons['Jane'].context)
-        self.assertEquals(knows[1].context, persons['John'].context)
-
-        # TODO load() only queries context of resource
-        ## Same with load()
-        #mary = Person.get_by(foaf_name='Mary').context(NO_CONTEXT).one()
-        #mary.load()
-
-        #self.assertEquals(mary.foaf_knows[0].context, persons['Jane'].context)
-        #self.assertEquals(mary.foaf_knows[1].context, persons['John'].context)
-
-        # Same with full()
-        mary = Person.get_by(foaf_name='Mary').full().context(NO_CONTEXT).one()
-
-        persons_and_context = [(p, p.context) for p in [persons['Jane'], persons['John']]]
-
-        # TODO fails under Virtuoso as V. doesn't allow ?g to be bound to two
-        # optional matches
-        get_person_and_context = lambda p: (p, p.context)
-        self.assertEquals(set(map(get_person_and_context, mary.foaf_knows)),
-                          set(persons_and_context))
-
-    def test_get_keeps_context(self):
-        store, session = self._get_store_session(use_default_context=False)
-        Person = session.get_class(surf.ns.FOAF + "Person")
-
-        context = URIRef("http://my_context_1")
-        jane = session.get_resource("http://Jane", Person, context=context)
-        jane.foaf_name = "Jane"
-        jane.save()
-
-        person = Person.get_by(foaf_name='Jane').context(context).one()
-        self.assertEquals(person.context, context)
-
-    def test_full_keeps_context(self):
-        store, session = self._get_store_session(use_default_context=False)
-        Person = session.get_class(surf.ns.FOAF + "Person")
-
-        # Put each person into one context
-        person_orig = []
-        for name, context in [("John", None),
-                              ("Mary", URIRef("http://my_context_1")),
-                              ("Jane", URIRef("http://other_context_1"))]:
-            person = session.get_resource("http://%s" % name, Person,
-                                          context=context)
-            person.foaf_name = name
-            person.save()
-            person_orig.append(person)
-
-        persons = Person.all().full().context(NO_CONTEXT)
-
-        get_person_and_context = lambda p: (p, p.context)
-        # TODO this fails on AllegroGraph as an empty ?c will trigger an empty
-        # ?g even if ?g actually should have a bound value. Swapping ?g & ?c
-        # will get this test to succeed but breaks above
-        # test_query_foreign_context_attribute instead
-        self.assertEquals(set(map(get_person_and_context, person_orig)),
-                          set(map(get_person_and_context, persons)))
-
-    def test_query_multiple_context(self):
-        """ Test resource.all() and get_by() with multiple contexts. """
-
-        store, session = self._get_store_session()
-        Person = session.get_class(surf.ns.FOAF + "Person")
-
-        for name, context in [("John", None),
-                              ("Mary", URIRef("http://my_context_1")),
-                              ("Jane", URIRef("http://other_context_1"))]:
-            # Put each person into one context
-            store.clear(context)
-
-            person = session.get_resource("http://%s" % name, Person,
-                                          context=context)
-            person.foaf_name = name
-            person.save()
-
-        persons = list(Person.all().context("http://my_context_1",
-                                            "http://other_context_1"))
-        self.assertEquals(len(persons), 2)
-        self.assertEquals(sorted([unicode(p.subject) for p in persons]),
-                          ['http://Jane', 'http://Mary'])
-
-    def test_multiple_context_attribute_access(self):
-        """ Test attribute access with multiple contexts. """
-
-        store, session = self._get_store_session()
-        Person = session.get_class(surf.ns.FOAF + "Person")
-
-        # Put each person into one context
-        persons = {}
-        for name, context in [("John", None),
-                              ("Mary", URIRef("http://my_context_1")),
-                              ("Jane", URIRef("http://other_context_1"))]:
-            person = session.get_resource("http://%s" % name, Person,
-                                          context=context)
-            person.foaf_name = name
-            person.save()
-            persons[name] = person
-
-        persons['Jane'].foaf_knows = persons['John']
-        persons['Jane'].update()
-        persons['Mary'].foaf_knows = persons['Jane']
-        persons['Mary'].update()
-
-        jane = Person.get_by(foaf_name='Jane')\
-                     .context("http://my_context_1", "http://other_context_1")\
-                     .one()
-        # Make sure that John's type info is not accessed
-        self.assert_(type(jane.foaf_knows.first) is URIRef)
-        self.assertEquals(jane.foaf_knows.first, URIRef('http://John'))
-
-        mary = Person.get_by(foaf_name='Mary')\
-                     .context("http://my_context_1", "http://other_context_1")\
-                     .one()
-
-        # Access with query
-        self.assertEquals(mary.foaf_knows.limit(1).first().foaf_name.first,
-                          'Jane')
-        # Access as attribute
-        self.assertEquals(mary.foaf_knows.first.foaf_name.first, 'Jane')
-
-    def test_multiple_request_context(self):
-        """ Test multiple query contexts. """
-
-        store, session = self._get_store_session()
-        Person = session.get_class(surf.ns.FOAF + "Person")
-
-        # Put each person into one context
-        persons = {}
-        for name, context in [("John", None),
-                              ("Mary", URIRef("http://my_context_1")),
-                              ("Jane", URIRef("http://other_context_1"))]:
-            person = session.get_resource("http://%s" % name, Person,
-                                          context=context)
-            person.foaf_name = name
-            person.save()
-            persons[name] = person
-
-        persons['Jane'].foaf_knows = persons['Mary']
-        persons['Jane'].update()
-
-        query_contexts = (URIRef("http://my_context_1"),
-                          URIRef("http://other_context_1"))
-        jane = Person.get_by(foaf_name='Jane').context(*query_contexts).one()
-        # Make sure that query context is handed down
-        self.assertEquals(jane.query_contexts, query_contexts)
-        self.assertEquals(jane.foaf_knows.first.query_contexts, query_contexts)
+        #persons = Person.all().context(NO_CONTEXT)
+        #self.assert_(len(persons) < 2)
